@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "linguapdf"
+version = "0.1.0"
+description = "PDF study reader with non-destructive annotations and bilingual flashcards"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "PySide6-Essentials>=6.7,<7",
+  "PyMuPDF>=1.24,<2",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8,<9",
+  "ruff>=0.7,<1",
+]
+
+[project.scripts]
+linguapdf = "linguapdf.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
