@@ -69,6 +69,8 @@ class PdfDocumentSession:
         *,
         rect: tuple[float, float, float, float] | None = None,
         text: str | None = None,
+        font_size: float | None = None,
+        text_color: str | None = None,
     ) -> Annotation | None:
         for annotation in self.annotations:
             if annotation.id != annotation_id:
@@ -77,6 +79,10 @@ class PdfDocumentSession:
                 annotation.rect = rect
             if text is not None:
                 annotation.text = text
+            if font_size is not None:
+                annotation.font_size = font_size
+            if text_color is not None:
+                annotation.text_color = text_color
             self.dirty = True
             return annotation
         return None
@@ -136,11 +142,11 @@ class PdfDocumentSession:
                     annotation = page.add_freetext_annot(
                         rect,
                         item.text,
-                        fontsize=10,
-                        text_color=(0.10, 0.15, 0.25),
-                        fill_color=color,
+                        fontsize=item.font_size,
+                        text_color=_hex_to_rgb(item.text_color),
+                        fill_color=None,
                     )
-                    annotation.set_opacity(0.82)
+                    annotation.set_border(width=0)
                 else:
                     continue
                 annotation.set_info(content=item.text, title="LinguaPDF")

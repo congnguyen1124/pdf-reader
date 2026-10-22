@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import re
 import sqlite3
+import unicodedata
 from collections.abc import Iterable
 from datetime import datetime, timezone
 from hashlib import sha256
@@ -8,7 +10,7 @@ from pathlib import Path
 from shutil import copy2
 from uuid import uuid4
 
-from linguapdf.domain.models import StudyProject, VocabularyCard
+from linguapdf.domain.models import StudyFolder, StudyProject, VocabularyCard
 from linguapdf.domain.scheduler import schedule_review
 
 
@@ -32,7 +34,16 @@ class LibraryService:
                 title TEXT NOT NULL,
                 last_opened TEXT NOT NULL,
                 kind TEXT NOT NULL DEFAULT 'pdf',
-                created_at TEXT NOT NULL DEFAULT ''
+                created_at TEXT NOT NULL DEFAULT '',
+                folder_id TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS folders (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL COLLATE NOCASE,
+                parent_id TEXT REFERENCES folders(id) ON DELETE RESTRICT,
+                created_at TEXT NOT NULL,
+                UNIQUE(parent_id, name)
             );
 
             CREATE TABLE IF NOT EXISTS vocabulary (
@@ -61,7 +72,8 @@ class LibraryService:
             """
         )
         columns = {
-            row["name"] for row in self.connection.execute("PRAGMA table_info(documents)").fetchall()
+            row["name"]
+            for row in self.connection.execute("PRAGMA table_info(documents)").fetchall()
         }
         if "kind" not in columns:
             self.connection.execute(
@@ -71,56 +83,182 @@ class LibraryService:
             self.connection.execute(
                 "ALTER TABLE documents ADD COLUMN created_at TEXT NOT NULL DEFAULT ''"
             )
+        if "folder_id" not in columns:
+            self.connection.execute("ALTER TABLE documents ADD COLUMN folder_id TEXT")
         self.connection.execute("UPDATE documents SET created_at=last_opened WHERE created_at=''")
         self.connection.commit()
 
-    def register_document(self, document_id: str, path: str, title: str) -> None:
+    def register_document(
+        self,
+        document_id: str,
+        path: str,
+        title: str,
+        folder_id: str | None = None,
+    ) -> None:
         now = datetime.now(timezone.utc).isoformat()
         self.connection.execute(
             """
-            INSERT INTO documents(id, path, title, last_opened, kind, created_at)
-            VALUES (?, ?, ?, ?, 'pdf', ?)
+            INSERT INTO documents(id, path, title, last_opened, kind, created_at, folder_id)
+            VALUES (?, ?, ?, ?, 'pdf', ?, ?)
             ON CONFLICT(id) DO UPDATE SET path=excluded.path, title=excluded.title,
-                last_opened=excluded.last_opened
+                last_opened=excluded.last_opened,
+                folder_id=COALESCE(excluded.folder_id, documents.folder_id)
             """,
-            (document_id, path, title, now, now),
+            (document_id, path, title, now, now, folder_id),
         )
         self.connection.commit()
 
-    def import_pdf(self, source_path: str | Path, title: str = "") -> StudyProject:
+    def import_pdf(
+        self,
+        source_path: str | Path,
+        title: str = "",
+        folder_id: str | None = None,
+    ) -> StudyProject:
         source = Path(source_path).expanduser().resolve()
         digest = sha256()
         with source.open("rb") as stream:
             while chunk := stream.read(1024 * 1024):
                 digest.update(chunk)
         document_id = digest.hexdigest()
+        existing = self.project(document_id)
+        if existing:
+            if folder_id is not None and existing.folder_id != folder_id:
+                self.move_project(document_id, folder_id)
+            self.touch_project(document_id)
+            refreshed = self.project(document_id)
+            if refreshed is None:
+                raise RuntimeError("Could not reopen the imported PDF.")
+            return refreshed
         destination = self.pdf_directory / f"{document_id}.pdf"
         if not destination.exists():
             copy2(source, destination)
-        self.register_document(document_id, str(destination), title.strip() or source.stem)
+        project_title = self.unique_project_name(title.strip() or source.stem, folder_id)
+        self.register_document(document_id, str(destination), project_title, folder_id)
         project = self.project(document_id)
         if project is None:
-            raise RuntimeError("Không thể tạo tài liệu trong thư viện.")
+            raise RuntimeError("Could not create the PDF workspace.")
         return project
 
-    def create_vocabulary_project(self, title: str) -> StudyProject:
-        clean_title = title.strip()
-        if not clean_title:
-            raise ValueError("Tên bộ từ vựng không được để trống.")
+    def create_vocabulary_project(self, title: str, folder_id: str | None = None) -> StudyProject:
+        clean_title = self.unique_project_name(title, folder_id)
         now = datetime.now(timezone.utc).isoformat()
         project_id = uuid4().hex
         self.connection.execute(
             """
-            INSERT INTO documents(id, path, title, last_opened, kind, created_at)
-            VALUES (?, '', ?, ?, 'vocabulary', ?)
+            INSERT INTO documents(id, path, title, last_opened, kind, created_at, folder_id)
+            VALUES (?, '', ?, ?, 'vocabulary', ?, ?)
             """,
-            (project_id, clean_title, now, now),
+            (project_id, clean_title, now, now, folder_id),
         )
         self.connection.commit()
         project = self.project(project_id)
         if project is None:
-            raise RuntimeError("Không thể tạo bộ từ vựng.")
+            raise RuntimeError("Could not create the workspace.")
         return project
+
+    def folders(self) -> list[StudyFolder]:
+        rows = self.connection.execute(
+            "SELECT * FROM folders ORDER BY name COLLATE NOCASE"
+        ).fetchall()
+        return [
+            StudyFolder(
+                id=row["id"],
+                name=row["name"],
+                parent_id=row["parent_id"],
+                created_at=row["created_at"],
+            )
+            for row in rows
+        ]
+
+    def create_folder(self, name: str, parent_id: str | None = None) -> StudyFolder:
+        clean_name = self.unique_folder_name(name, parent_id)
+        folder = StudyFolder(
+            id=uuid4().hex,
+            name=clean_name,
+            parent_id=parent_id,
+            created_at=datetime.now(timezone.utc).isoformat(),
+        )
+        self.connection.execute(
+            "INSERT INTO folders(id, name, parent_id, created_at) VALUES (?, ?, ?, ?)",
+            (folder.id, folder.name, folder.parent_id, folder.created_at),
+        )
+        self.connection.commit()
+        return folder
+
+    def folder_is_empty(self, folder_id: str) -> bool:
+        child = self.connection.execute(
+            "SELECT 1 FROM folders WHERE parent_id=? LIMIT 1", (folder_id,)
+        ).fetchone()
+        project = self.connection.execute(
+            "SELECT 1 FROM documents WHERE folder_id=? LIMIT 1", (folder_id,)
+        ).fetchone()
+        return not child and not project
+
+    def delete_folder(self, folder_id: str) -> bool:
+        if not self.folder_is_empty(folder_id):
+            return False
+        cursor = self.connection.execute("DELETE FROM folders WHERE id=?", (folder_id,))
+        self.connection.commit()
+        return bool(cursor.rowcount)
+
+    def move_project(self, project_id: str, folder_id: str | None) -> None:
+        self.connection.execute(
+            "UPDATE documents SET folder_id=? WHERE id=?", (folder_id, project_id)
+        )
+        self.connection.commit()
+
+    def attach_pdf(self, project_id: str, source_path: str | Path) -> StudyProject:
+        source = Path(source_path).expanduser().resolve()
+        destination = self.generated_pdf_path(project_id)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if source != destination.resolve():
+            copy2(source, destination)
+        return self.attach_generated_pdf(project_id, destination)
+
+    def attach_generated_pdf(self, project_id: str, path: str | Path) -> StudyProject:
+        pdf_path = Path(path).expanduser().resolve()
+        self.connection.execute(
+            "UPDATE documents SET path=?, kind='pdf', last_opened=? WHERE id=?",
+            (str(pdf_path), datetime.now(timezone.utc).isoformat(), project_id),
+        )
+        self.connection.commit()
+        project = self.project(project_id)
+        if project is None:
+            raise RuntimeError("Could not attach the PDF to this workspace.")
+        return project
+
+    def generated_pdf_path(self, project_id: str) -> Path:
+        project = self.project(project_id)
+        if project is None:
+            raise ValueError("Workspace not found.")
+        return self.pdf_directory / project.id / f"{project.title}.pdf"
+
+    def unique_project_name(self, name: str, folder_id: str | None) -> str:
+        return self._unique_name("documents", "title", name, folder_id)
+
+    def unique_folder_name(self, name: str, parent_id: str | None) -> str:
+        return self._unique_name("folders", "name", name, parent_id)
+
+    def _unique_name(self, table: str, column: str, name: str, parent_id: str | None) -> str:
+        base = snake_case_name(name)
+        if not base:
+            raise ValueError("The name cannot be empty.")
+        parent_column = "folder_id" if table == "documents" else "parent_id"
+        if parent_id is None:
+            rows = self.connection.execute(
+                f"SELECT {column} FROM {table} WHERE {parent_column} IS NULL"
+            ).fetchall()
+        else:
+            rows = self.connection.execute(
+                f"SELECT {column} FROM {table} WHERE {parent_column}=?", (parent_id,)
+            ).fetchall()
+        existing = {str(row[column]).casefold() for row in rows}
+        candidate = base
+        suffix = 2
+        while candidate.casefold() in existing:
+            candidate = f"{base}_{suffix}"
+            suffix += 1
+        return candidate
 
     def projects(self) -> list[StudyProject]:
         rows = self.connection.execute(
@@ -164,6 +302,11 @@ class LibraryService:
                 return
             path.unlink(missing_ok=True)
             path.with_suffix(path.suffix + ".linguapdf.json").unlink(missing_ok=True)
+            if path.parent != self.pdf_directory.resolve():
+                try:
+                    path.parent.rmdir()
+                except OSError:
+                    pass
 
     def add_cards(self, document_id: str, cards: Iterable[tuple[str, str]]) -> tuple[int, int]:
         now = datetime.now(timezone.utc).isoformat()
@@ -265,7 +408,11 @@ class LibraryService:
             """,
             (now, document_id),
         ).fetchone()
-        return {"total": row["total"] or 0, "due": row["due"] or 0, "learning": row["learning"] or 0}
+        return {
+            "total": row["total"] or 0,
+            "due": row["due"] or 0,
+            "learning": row["learning"] or 0,
+        }
 
     def close(self) -> None:
         self.connection.close()
@@ -296,5 +443,13 @@ def _row_to_project(row: sqlite3.Row) -> StudyProject:
         created_at=row["created_at"],
         last_opened=row["last_opened"],
         card_count=row["card_count"],
+        folder_id=row["folder_id"],
     )
 
+
+def snake_case_name(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", value.replace("đ", "d").replace("Đ", "D"))
+    ascii_value = "".join(
+        character for character in normalized if not unicodedata.combining(character)
+    )
+    return re.sub(r"_+", "_", re.sub(r"[^a-zA-Z0-9]+", "_", ascii_value)).strip("_").lower()

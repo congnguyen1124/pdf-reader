@@ -5,6 +5,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QDialog,
     QDialogButtonBox,
+    QFrame,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -15,17 +16,23 @@ from PySide6.QtWidgets import (
 )
 
 from linguapdf.domain.vocabulary_parser import parse_vocabulary
+from linguapdf.ui.i18n import tr
 
 
 class VocabularyInputTable(QTableWidget):
     def __init__(self, parent=None):
-        super().__init__(12, 2, parent)
-        self.setHorizontalHeaderLabels(["English", "Tiếng Việt"])
+        super().__init__(7, 2, parent)
+        self.setObjectName("vocabularyInputTable")
+        self.setHorizontalHeaderLabels(["English", tr("vietnamese")])
         self.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.verticalHeader().setDefaultSectionSize(38)
+        self.horizontalHeader().setMinimumHeight(42)
+        self.verticalHeader().setDefaultSectionSize(44)
+        self.verticalHeader().setMinimumWidth(36)
         self.setAlternatingRowColors(True)
         self.setSelectionMode(QTableWidget.SelectionMode.ContiguousSelection)
+        self.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectItems)
         self.setTabKeyNavigation(True)
+        self.setWordWrap(True)
         QShortcut(QKeySequence.StandardKey.Paste, self, activated=self.paste_clipboard)
 
     def paste_clipboard(self) -> None:
@@ -86,56 +93,84 @@ class VocabularyInputTable(QTableWidget):
 class BulkImportDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Thêm nhiều từ vựng")
-        self.resize(720, 560)
+        self.setWindowTitle(tr("bulk_dialog_title"))
+        self.setObjectName("bulkImportDialog")
+        self.resize(780, 620)
+        self.setMinimumSize(660, 500)
         self._cards: list[tuple[str, str]] = []
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(22, 20, 22, 20)
-        layout.setSpacing(12)
+        layout.setContentsMargins(26, 24, 26, 22)
+        layout.setSpacing(14)
 
-        title = QLabel("Nhập danh sách từ vựng")
-        title.setObjectName("sectionTitle")
+        title = QLabel(tr("bulk_heading"))
+        title.setObjectName("dialogTitle")
         layout.addWidget(title)
 
-        help_text = QLabel(
-            "Nhập trực tiếp vào bảng hoặc dán 2 cột từ Excel/Google Sheets. "
-            "Mỗi hàng sẽ trở thành một flashcard."
-        )
-        help_text.setObjectName("mutedLabel")
+        help_box = QFrame()
+        help_box.setObjectName("inputHelpBox")
+        help_layout = QHBoxLayout(help_box)
+        help_layout.setContentsMargins(12, 10, 12, 10)
+        tip_icon = QLabel("⌘V")
+        tip_icon.setObjectName("pasteBadge")
+        help_layout.addWidget(tip_icon)
+        help_text = QLabel(tr("bulk_help"))
+        help_text.setObjectName("inputHelpText")
         help_text.setWordWrap(True)
-        layout.addWidget(help_text)
+        help_layout.addWidget(help_text, 1)
+        layout.addWidget(help_box)
+
+        column_hint = QHBoxLayout()
+        english_hint = QLabel(tr("english_column_hint"))
+        english_hint.setObjectName("columnHint")
+        vietnamese_hint = QLabel(tr("vietnamese_column_hint"))
+        vietnamese_hint.setObjectName("columnHint")
+        column_hint.addWidget(english_hint, 1)
+        column_hint.addWidget(vietnamese_hint, 1)
+        layout.addLayout(column_hint)
 
         self.table = VocabularyInputTable()
-        self.table.cellChanged.connect(lambda: self.table.ensure_empty_rows())
+        self.table.cellChanged.connect(self._table_changed)
         layout.addWidget(self.table, 1)
 
-        tools = QHBoxLayout()
-        add_rows = QPushButton("＋ Thêm 5 hàng")
-        add_rows.clicked.connect(lambda: self._add_rows(5))
-        tools.addWidget(add_rows)
-        paste = QPushButton("Dán từ clipboard")
-        paste.clicked.connect(self.table.paste_clipboard)
-        tools.addWidget(paste)
-        swap = QPushButton("⇄ Đổi hai cột")
-        swap.clicked.connect(self.table.swap_columns)
-        tools.addWidget(swap)
+        tools_frame = QFrame()
+        tools_frame.setObjectName("inputTools")
+        tools = QHBoxLayout(tools_frame)
+        tools.setContentsMargins(8, 7, 8, 7)
+        tools.setSpacing(7)
+        paste_shortcut = QKeySequence(QKeySequence.StandardKey.Paste).toString(
+            QKeySequence.SequenceFormat.NativeText
+        )
+        self.paste_button = QPushButton(f"{paste_shortcut}  {tr('paste_clipboard')}")
+        self.paste_button.setObjectName("softPrimaryButton")
+        self.paste_button.clicked.connect(self.table.paste_clipboard)
+        tools.addWidget(self.paste_button)
+        self.add_rows_button = QPushButton(f"＋ {tr('add_rows')}")
+        self.add_rows_button.clicked.connect(lambda: self._add_rows(5))
+        tools.addWidget(self.add_rows_button)
+        self.swap_button = QPushButton(f"⇄  {tr('swap_columns')}")
+        self.swap_button.clicked.connect(self.table.swap_columns)
+        tools.addWidget(self.swap_button)
         tools.addStretch()
-        layout.addLayout(tools)
+        layout.addWidget(tools_frame)
 
-        self.preview = QLabel("Chưa có dữ liệu")
-        self.preview.setObjectName("mutedLabel")
+        self.preview = QLabel(tr("no_data"))
+        self.preview.setObjectName("importStatus")
         layout.addWidget(self.preview)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Save
         )
-        save_button = buttons.button(QDialogButtonBox.StandardButton.Save)
-        save_button.setText("Thêm vào bài học")
-        save_button.setObjectName("primaryButton")
+        self.save_button = buttons.button(QDialogButtonBox.StandardButton.Save)
+        self.save_button.setText(tr("add_to_lesson"))
+        self.save_button.setObjectName("primaryButton")
+        self.save_button.setEnabled(False)
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText(tr("cancel"))
         buttons.rejected.connect(self.reject)
         buttons.accepted.connect(self._accept_if_valid)
         layout.addWidget(buttons)
+        self.table.setCurrentCell(0, 0)
+        self.table.setFocus()
 
     @property
     def cards(self) -> list[tuple[str, str]]:
@@ -145,6 +180,23 @@ class BulkImportDialog(QDialog):
         for _ in range(count):
             self.table.insertRow(self.table.rowCount())
 
+    def _table_changed(self, *_args) -> None:
+        self.table.ensure_empty_rows()
+        cards, incomplete = self.table.cards()
+        self.save_button.setEnabled(bool(cards) and not incomplete)
+        self.preview.setStyleSheet("")
+        if incomplete:
+            self.preview.setText(tr("rows_need_attention", count=len(incomplete)))
+            self.preview.setProperty("state", "warning")
+        elif cards:
+            self.preview.setText(tr("cards_ready", count=len(cards)))
+            self.preview.setProperty("state", "ready")
+        else:
+            self.preview.setText(tr("no_data"))
+            self.preview.setProperty("state", "empty")
+        self.preview.style().unpolish(self.preview)
+        self.preview.style().polish(self.preview)
+
     def _accept_if_valid(self) -> None:
         cards, incomplete = self.table.cards()
         if incomplete:
@@ -153,15 +205,12 @@ class BulkImportDialog(QDialog):
             target = self.table.item(first, 0) or self.table.item(first, 1)
             if target:
                 self.table.scrollToItem(target)
-            self.preview.setText(
-                f"Hàng {first + 1} còn thiếu một cột. Hãy nhập đủ English và Tiếng Việt."
-            )
-            self.preview.setStyleSheet("color: #BE123C;")
+            self.preview.setText(tr("incomplete_row", row=first + 1))
+            self.preview.setProperty("state", "warning")
             return
         if not cards:
-            self.preview.setText("Hãy nhập ít nhất một cặp từ vựng.")
-            self.preview.setStyleSheet("color: #BE123C;")
+            self.preview.setText(tr("at_least_one_card"))
+            self.preview.setProperty("state", "warning")
             return
         self._cards = cards
         self.accept()
-

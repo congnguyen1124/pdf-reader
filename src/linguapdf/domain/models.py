@@ -17,6 +17,8 @@ class Annotation:
     rect: tuple[float, float, float, float]
     text: str = ""
     color: str = "#FACC15"
+    font_size: float = 14.0
+    text_color: str = "#2563EB"
     id: str = field(default_factory=lambda: uuid4().hex)
     created_at: str = field(default_factory=utc_now_iso)
 
@@ -34,6 +36,8 @@ class Annotation:
             rect=tuple(float(value) for value in data["rect"]),
             text=str(data.get("text", "")),
             color=str(data.get("color", "#FACC15")),
+            font_size=float(data.get("font_size", 14.0)),
+            text_color=str(data.get("text_color", "#2563EB")),
             created_at=str(data.get("created_at") or utc_now_iso()),
         )
 
@@ -62,6 +66,15 @@ class StudyProject:
     created_at: str
     last_opened: str
     card_count: int = 0
+    folder_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class StudyFolder:
+    id: str
+    name: str
+    parent_id: str | None
+    created_at: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,4 +83,3 @@ class ScheduleResult:
     interval_days: float
     ease_factor: float
     due_at: datetime
-

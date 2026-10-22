@@ -20,7 +20,14 @@ def test_sidecar_round_trip_and_export(tmp_path) -> None:
     session = PdfDocumentSession(pdf_path)
     session.add_annotation(Annotation(page=0, kind="highlight", rect=(60, 60, 170, 80)))
     session.add_annotation(
-        Annotation(page=0, kind="text", rect=(80, 100, 250, 160), text="Review this phrase")
+        Annotation(
+            page=0,
+            kind="text",
+            rect=(80, 100, 250, 160),
+            text="Review this phrase",
+            font_size=16,
+            text_color="#2563EB",
+        )
     )
     session.add_annotation(
         Annotation(page=0, kind="underline", rect=(60, 170, 180, 190), color="#4F46E5")
